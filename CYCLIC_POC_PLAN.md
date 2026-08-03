@@ -15,6 +15,58 @@ more). No design-level divergence found. `task-sdk` is version `1.3.0` at this t
 ---
 
 ## STATUS LOG (append-only; newest first)
+- **2026-08-03 — Phase 6 GREEN + PoC COMPLETE (all phases 0–6 done).** Loop back-edges
+  emitted by `dag_edges` with an `is_loop_edge` flag + field on graph `EdgeResponse`
+  (commit `851dfff`), so the Graph view draws the cycle (reactflow renders every payload
+  edge). 3 dag_edges tests pass. Distinct dashed *styling* deferred: needs the UI node
+  toolchain (no `node_modules` here) to regenerate OpenAPI TS types + build; exact 3-spot
+  change documented in `cyclic-examples/README.md`. **All six phases complete** — the
+  engine (lane → serde → SCC → update_state hook), the Rubik demo, and graph rendering
+  all work end to end on Airflow 3.3.0.
+- **2026-08-03 — Phase 5 GREEN (flagship demo works).** Rubik's cube solved as ONE
+  cyclic Dag (commit `6b095b8`): body `inspect_cube -> compute_move -> apply_move`
+  loops once per move until solved (`until` XCom guard), ran 8 passes → "SOLVED in 8
+  moves" → SUCCESS via `DAG.test()`. Minimal `counter_loop` (max_iterations) also green.
+  Added `XComArg.loop_to` so TaskFlow reads `apply.loop_to(inspect, ...)` (validated by
+  the Rubik run). Cube state carried in a Variable (feedback convention). `cyclic-examples/`
+  has both Dags + a README documenting API/scope. XCom-lifetime question resolved
+  empirically: the guard reads the *current* pass's XCom correctly each iteration
+  (overwrite semantics), so Variables are the right feedback channel. 12 SDK cyclic
+  tests pass; xcom_arg regression = 2 pre-existing env errors only. **Next: Phase 6 (UI).**
+- **2026-08-03 — Phase 4 GREEN (THE CRUX — full mechanism works end to end).** Real
+  `DagRun.update_state` hook landed (commits `96dfb7a` Phase 3, `0c29081` Phase 4).
+  Phase 3: `models/_cyclic.py` SCC detection (9 tests). Phase 4: `_reloop_completed_cycles`
+  clears a finished loop body before the terminal checks; declarative XCom guard
+  (`_loop_exit_guard_satisfied`) + `max_iterations` (via `try_number`, since body
+  retries=0). Verified via `DAG.test()`: exits on max_iterations (4 passes), exits on
+  guard (pass 3), body failure FAILS the run (no infinite loop), acyclic fast-path
+  untouched. 5 formal `dag_maker` tests (`test_dagrun_cyclic.py`) pass.
+  **Regression caught & fixed:** my inserted helper methods stole `update_state`'s
+  `@provide_session` decorator → 21 `test_dagrun.py` failures; moved the decorator back →
+  **195 passed** (1 pre-existing env error). LESSON for future edits near a `def`: check
+  for a decorator on the line above before inserting methods before it. **Next: Phase 5.**
+- **2026-08-03 — Phase 2 GREEN (serde gate cleared; Phase 4 unblocked).** Loop edges
+  now reach the `SerializedDAG` (commit `7a9d386`). Serialize `loop_downstream_task_ids`
+  (in `SerializedBaseOperator.get_serialized_fields`; excluded `loop_upstream` from SDK
+  serialize; rebuild loop_upstream on deserialize); emit `loop_edge_info` + `allow_cycles`
+  on the Dag; **registered all three in `serialization/schema.json`** (the strict `dag`
+  def rejected them until then — caught by the test harness, not the raw round-trip).
+  Fixed a real regression: `SerializedMappedOperator` has no loop lane → made the
+  upstream rebuild defensive (`getattr(..., ())`); mapped-in-loop is out of scope. 6 new
+  round-trip tests pass (`test_cyclic_serialization.py`); operator tests unchanged (same
+  6 env errors). Note: existing `test_dag_serialization.py`/`test_serialized_objects.py`
+  can't run in the lean venv (need `cncf.kubernetes`) — regression covered instead by the
+  autouse fixture round-tripping all example/mapped Dags in the new tests. **Next: Phase 3.**
+- **2026-08-03 — Phase 1 GREEN.** Loop-edge lane + API landed (commit `4cb2de7` on
+  `cyclic-dags-poc`). Added `loop_upstream_task_ids`/`loop_downstream_task_ids` to
+  `GenericDAGNode` (real file `shared/dagnode/.../node.py`, reached via the
+  `sdk/_shared` **symlink** — stage the real path), kept out of
+  `get_direct_relative_ids`; `DAGNode.loop_to(target, *, max_iterations, until=None)`;
+  `DAG(allow_cycles=True)` + `loop_edge_info` (mirrors `edge_info`) + `set_loop_edge`;
+  `DAG._validate_loop_edges` (requires allow_cycles, endpoints exist, endpoints
+  `retries=0`). 11 new tests pass (`task_sdk/definitions/test_cyclic.py`); `test_dag.py`
+  green; the 6 `test_operator.py` errors are pre-existing env issues (structlog caplog
+  fixture), identical with changes stashed — no regression. **Next: Phase 2 (serde).**
 - **2026-08-03 — Phase 0 GREEN (PoC de-risked).** Env bootstrapped: fork clone at
   tag `3.3.0`, branch `cyclic-dags-poc`, lean editable venv (`airflow/.venv`), SQLite
   metadata DB at `airflow/.airflow_home`. Smoke gate passed. Spike proved the crux:

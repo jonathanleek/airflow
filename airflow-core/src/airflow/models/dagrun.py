@@ -1144,6 +1144,90 @@ class DagRun(Base, LoggingMixin):
             span.set_status(status_code)
             span.end()
 
+    def _reloop_completed_cycles(self, dag, *, session: Session) -> None:
+        """
+        Re-run finished loop bodies of a true cyclic Dag.
+
+        For each loop body (SCC over normal + loop edges) whose tasks have all
+        succeeded -- i.e. a full pass just completed -- decide whether to loop again:
+        continue while the iteration cap is not reached and the exit guard is not
+        satisfied. To continue, clear the whole body so the scheduler re-runs it.
+
+        This must run at the top of ``update_state`` (before scheduling decisions and
+        the terminal-state checks), so a just-finished pass is never mistaken for a
+        completed or deadlocked run. Clearing only when the *entire* body is success
+        makes it idempotent within a pass: once cleared the body is no longer all
+        success, so it will not be cleared again until the next pass finishes.
+        """
+        if not getattr(dag, "loop_edge_info", None):
+            return
+
+        from airflow.models._cyclic import find_loop_bodies, loop_edges_of
+        from airflow.models.taskinstance import clear_task_instances
+
+        bodies = find_loop_bodies(dag)
+        if not bodies:
+            return
+
+        tis_by_task = {ti.task_id: ti for ti in self.get_task_instances(session=session)}
+        for scc in bodies:
+            body_tis = [tis_by_task[t] for t in scc if t in tis_by_task]
+            if len(body_tis) != len(scc):
+                continue  # body not fully materialized yet
+            if not all(ti.state == TaskInstanceState.SUCCESS for ti in body_tis):
+                continue  # pass not complete
+
+            edges = loop_edges_of(dag, scc)
+            max_iterations = min((int(meta["max_iterations"]) for *_, meta in edges), default=None)
+            # Loop-body tasks have retries=0 (enforced at definition time), so try_number
+            # equals the number of completed passes.
+            completed_passes = max(ti.try_number for ti in body_tis)
+
+            if max_iterations is not None and completed_passes >= max_iterations:
+                continue  # exit: iteration cap reached
+            if self._loop_exit_guard_satisfied(edges, session=session):
+                continue  # exit: data guard satisfied
+
+            self.log.info(
+                "[cyclic] loop body %s finished pass %s; clearing to re-run",
+                sorted(scc),
+                completed_passes,
+            )
+            clear_task_instances(body_tis, session=session, dag_run_state=False)
+            session.flush()
+
+    def _loop_exit_guard_satisfied(self, edges, *, session: Session) -> bool:
+        """
+        Return True if any loop edge's exit guard (``until``) is satisfied.
+
+        The only supported guard form is the declarative XCom spec
+        ``{"task_id", "xcom_key", "equals"}`` -- exit when that task's XCom for this
+        run equals the expected value. ``until=None`` means no data guard (the loop is
+        bounded solely by ``max_iterations``). Read before any clear, so it reflects
+        the pass that just finished.
+        """
+        from airflow.models.xcom import XComModel
+
+        for *_, meta in edges:
+            until = meta.get("until")
+            if not isinstance(until, dict):
+                continue  # None or unsupported form: max_iterations governs
+            task_id = until["task_id"]
+            xcom_key = until.get("xcom_key", "return_value")
+            row = session.scalar(
+                XComModel.get_many(
+                    run_id=self.run_id,
+                    key=xcom_key,
+                    task_ids=task_id,
+                    dag_ids=self.dag_id,
+                    limit=1,
+                )
+            )
+            value = XComModel.deserialize_value(row) if row is not None else None
+            if value == until.get("equals", True):
+                return True
+        return False
+
     @provide_session
     def update_state(
         self, *, session: Session = NEW_SESSION, execute_callbacks: bool = True
@@ -1194,6 +1278,10 @@ class DagRun(Base, LoggingMixin):
             tags=self.stats_tags,
         ):
             dag = self.get_dag()
+            # True cyclic Dags: if a loop body just finished a pass and should run
+            # again, clear it now -- BEFORE the scheduling decision and terminal-state
+            # checks below -- so the run is not judged complete or deadlocked mid-loop.
+            self._reloop_completed_cycles(dag, session=session)
             info = self.task_instance_scheduling_decisions(session=session)
 
             tis = info.tis

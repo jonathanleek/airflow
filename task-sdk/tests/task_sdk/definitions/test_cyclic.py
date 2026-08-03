@@ -22,7 +22,7 @@ from datetime import datetime
 
 import pytest
 
-from airflow.sdk import DAG
+from airflow.sdk import DAG, task
 from airflow.sdk.bases.operator import BaseOperator
 from airflow.sdk.exceptions import AirflowDagCycleException
 
@@ -118,3 +118,25 @@ def test_loop_to_rejects_cross_dag():
         c = BaseOperator(task_id="c")
     with pytest.raises(RuntimeError, match="different Dags"):
         c.loop_to(a, max_iterations=5)
+
+
+def test_loop_to_works_on_taskflow_xcomargs():
+    with DAG("tf", schedule=None, start_date=START, allow_cycles=True) as dag:
+
+        @task
+        def a():
+            return 1
+
+        @task
+        def b(x):
+            return x
+
+        xa = a()
+        xb = b(xa)
+        xa >> xb
+        # loop_to on XComArgs should proxy to the underlying operators.
+        xb.loop_to(xa, max_iterations=7, until={"task_id": "b", "xcom_key": "return_value", "equals": 1})
+
+    assert dag.task_dict["b"].loop_downstream_task_ids == {"a"}
+    assert dag.task_dict["a"].loop_upstream_task_ids == {"b"}
+    assert dag.loop_edge_info["b"]["a"]["max_iterations"] == 7

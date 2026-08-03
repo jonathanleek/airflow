@@ -156,6 +156,24 @@ class XComArg(ResolveMixin, DependencyMixin):
         for operator, _ in self.iter_references():
             operator.set_downstream(task_or_task_list, edge_modifier)
 
+    def loop_to(
+        self,
+        target: DependencyMixin,
+        *,
+        max_iterations: int,
+        until: str | dict | None = None,
+    ):
+        """Proxy to the underlying operator's ``loop_to`` (true cyclic Dags)."""
+        tails = self.leaves
+        if len(tails) != 1:
+            raise ValueError("loop_to() can only be called on a single-task XCom reference.")
+        if isinstance(target, XComArg):
+            heads = target.roots
+            if len(heads) != 1:
+                raise ValueError("loop_to() target must resolve to a single task.")
+            target = heads[0]
+        tails[0].loop_to(target, max_iterations=max_iterations, until=until)
+
     def _serialize(self) -> dict[str, Any]:
         """
         Serialize an XComArg.

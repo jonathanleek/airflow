@@ -90,6 +90,20 @@ airflow dags test counter_loop
 airflow dags test rubik_solver
 ```
 
+## Watching it loop in the UI
+
+The loop back-edge is emitted by the graph-structure API (`dag_edges` adds it with an
+`is_loop_edge` flag), so the **Graph view draws the back-edge** and you can watch the
+body tasks cycle (success → cleared → running) once per pass as the run progresses.
+Earlier passes are reachable per task via the try-number selector.
+
+Distinct *styling* for the back-edge (e.g. a dashed line) is a small, self-contained
+follow-up that needs the UI build toolchain (regenerate the OpenAPI TS client, then
+mirror the existing `is_setup_teardown` pattern in three spots:
+`ui/src/components/Graph/elkGraphUtils.ts` (type + the snake→camel mapping),
+`reactflowUtils.ts` (`EdgeData`), and `Edge.tsx` (`strokeDasharray`)). Until then the
+back-edge renders as a normal edge — visible, just not specially styled.
+
 ## Scope / limitations (PoC)
 
 - Sequential, single-token loops (one pass at a time).

@@ -31,6 +31,8 @@ class EdgeResponse(BaseEdgeResponse):
     is_setup_teardown: bool | None = None
     label: str | None = None
     is_source_asset: bool | None = None
+    # Back-edge of a true cyclic Dag (task.loop_to(...)); rendered distinctly.
+    is_loop_edge: bool | None = None
 
 
 class NodeResponse(BaseNodeResponse):

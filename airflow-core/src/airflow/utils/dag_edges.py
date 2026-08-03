@@ -139,4 +139,10 @@ def dag_edges(dag: SerializedDAG):
         if label:
             record["label"] = label
         result.append(record)
+
+    # Loop back-edges (true cyclic Dags) live in a separate lane and are not part of
+    # the normal edge set above; emit them so the cycle is visible in the graph.
+    for tail_id, heads in getattr(dag, "loop_edge_info", {}).items():
+        for head_id in heads:
+            result.append({"source_id": tail_id, "target_id": head_id, "is_loop_edge": True})
     return result

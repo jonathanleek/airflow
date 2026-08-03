@@ -534,6 +534,9 @@ class DAG:
     owner_links: dict[str, str] = attrs.field(factory=dict)
     auto_register: bool = attrs.field(default=True, converter=bool)
     fail_fast: bool = attrs.field(default=False, converter=bool)
+    # Opt-in to true cyclic Dags (loop edges declared via ``task.loop_to(...)``).
+    # Off by default so stock acyclic behavior is unchanged.
+    allow_cycles: bool = attrs.field(default=False, converter=bool)
     allowed_run_types: DagRunType | Collection[DagRunType] | None = attrs.field(
         default=None, converter=_convert_allowed_run_types
     )
@@ -553,6 +556,11 @@ class DAG:
     partial: bool = attrs.field(init=False, default=False)
 
     edge_info: dict[str, dict[str, EdgeInfoType]] = attrs.field(init=False, factory=dict)
+
+    # Loop-edge metadata for true cyclic Dags, keyed [tail_task_id][head_task_id]
+    # -> {"until": <guard spec | None>, "max_iterations": int}. Mirrors edge_info's
+    # nested-dict shape so it serializes the same way. Populated by set_loop_edge().
+    loop_edge_info: dict[str, dict[str, EdgeInfoType]] = attrs.field(init=False, factory=dict)
 
     has_on_success_callback: bool = attrs.field(init=False)
     has_on_failure_callback: bool = attrs.field(init=False)
@@ -762,10 +770,43 @@ class DAG:
         """
         self.timetable.validate()
         self.validate_setup_teardown()
+        self._validate_loop_edges()
 
         # We validate owner links on set, but since it's a dict it could be mutated without calling the
         # setter. Validate again here
         self._validate_owner_links(None, self.owner_links)
+
+    def _validate_loop_edges(self):
+        """
+        Validate declared loop back-edges for true cyclic Dags.
+
+        Loop edges require ``allow_cycles=True``, must connect tasks that exist in
+        the Dag, and (for this PoC) their endpoints must not retry -- retries would
+        conflate with loop iterations in the scheduler's per-pass history counting.
+        """
+        if not self.loop_edge_info:
+            return
+        if not self.allow_cycles:
+            raise ValueError(
+                f"Dag {self.dag_id!r} declares loop edges via task.loop_to() but was not created "
+                f"with allow_cycles=True. Set DAG(..., allow_cycles=True) to enable cyclic Dags."
+            )
+        for tail_id, heads in self.loop_edge_info.items():
+            for head_id, meta in heads.items():
+                for endpoint in (tail_id, head_id):
+                    if endpoint not in self.task_dict:
+                        raise ValueError(
+                            f"Loop edge {tail_id!r} -> {head_id!r} references task {endpoint!r} "
+                            f"which is not in Dag {self.dag_id!r}."
+                        )
+                if int(meta["max_iterations"]) < 1:
+                    raise ValueError(f"Loop edge {tail_id!r} -> {head_id!r} has max_iterations < 1.")
+                for endpoint in (tail_id, head_id):
+                    if getattr(self.task_dict[endpoint], "retries", 0):
+                        raise ValueError(
+                            f"Loop-body task {endpoint!r} must have retries=0 "
+                            f"(retries conflate with loop iterations)."
+                        )
 
     def validate_setup_teardown(self):
         """
@@ -1199,6 +1240,26 @@ class DAG:
         Note that this will overwrite, rather than merge with, existing info.
         """
         self.edge_info.setdefault(upstream_task_id, {})[downstream_task_id] = info
+
+    def set_loop_edge(
+        self,
+        tail_task_id: str,
+        head_task_id: str,
+        *,
+        until: str | dict | None,
+        max_iterations: int,
+    ) -> None:
+        """
+        Record a loop back-edge ``tail_task_id -> head_task_id`` and its guard.
+
+        The edge itself is stored in the operators' ``loop_*_task_ids`` lanes by
+        ``DAGNode.loop_to``; this stores the associated exit guard and iteration
+        cap on the Dag. Overwrites any existing metadata for the same edge.
+        """
+        self.loop_edge_info.setdefault(tail_task_id, {})[head_task_id] = {
+            "until": until,
+            "max_iterations": max_iterations,
+        }
 
     @owner_links.validator
     def _validate_owner_links(self, _, owner_links):

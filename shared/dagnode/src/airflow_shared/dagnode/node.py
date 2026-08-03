@@ -79,6 +79,13 @@ class GenericDAGNode(Generic[Dag, Task, TaskGroup]):
     downstream_group_ids: set[str | None]
     upstream_task_ids: set[str]
     downstream_task_ids: set[str]
+    # Loop edges (true cyclic Dags) live in a separate adjacency lane so the
+    # acyclic machinery -- cycle validation, trigger rules, topological sort --
+    # never sees them (they all read only ``get_direct_relative_ids()`` /
+    # ``upstream_task_ids``). Cyclic semantics are driven entirely by the
+    # scheduler-side loop hook over these sets. See CYCLIC_POC_PLAN.md.
+    loop_upstream_task_ids: set[str]
+    loop_downstream_task_ids: set[str]
 
     _log_config_logger_name: str | None = None
     _logger_name: str | None = None
@@ -88,6 +95,8 @@ class GenericDAGNode(Generic[Dag, Task, TaskGroup]):
         super().__init__()
         self.upstream_task_ids = set()
         self.downstream_task_ids = set()
+        self.loop_upstream_task_ids = set()
+        self.loop_downstream_task_ids = set()
 
     @property
     def log(self) -> Logger:

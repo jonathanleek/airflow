@@ -157,6 +157,52 @@ class DAGNode(GenericDAGNode["DAG", "Operator", "TaskGroup"], DependencyMixin, m
         """Set a node (or nodes) to be directly upstream from the current node."""
         self._set_relatives(task_or_task_list, upstream=True, edge_modifier=edge_modifier)
 
+    def loop_to(
+        self,
+        target: DependencyMixin,
+        *,
+        max_iterations: int,
+        until: str | dict | None = None,
+    ) -> None:
+        """
+        Declare a loop back-edge from this node to ``target`` (a true cycle).
+
+        ``a >> b >> c; c.loop_to(a, max_iterations=...)`` makes ``{a, b, c}`` a loop
+        body the scheduler re-runs each pass until ``until`` is satisfied or
+        ``max_iterations`` passes have completed. The back-edge lives in a separate
+        adjacency lane (``loop_*_task_ids``), so it does not gate normal scheduling
+        and is invisible to cycle validation. Requires ``DAG(allow_cycles=True)``.
+
+        :param target: the node execution jumps back to (the loop head).
+        :param max_iterations: hard cap on passes -- a mandatory safety valve.
+        :param until: declarative exit guard, evaluated scheduler-side each pass. A
+            Jinja string that renders truthy, or a dict spec
+            ``{"task_id", "xcom_key", "equals"}``. ``None`` => governed solely by
+            ``max_iterations``. Callables are unsupported (they cannot be serialized).
+        """
+        from airflow.sdk.bases.operator import BaseOperator
+        from airflow.sdk.definitions.mappedoperator import MappedOperator
+
+        if not isinstance(target, (BaseOperator, MappedOperator)):
+            raise TypeError(f"loop_to() target must be an Operator; received {type(target).__name__}")
+        if max_iterations < 1:
+            raise ValueError("loop_to() max_iterations must be >= 1")
+
+        src_dag = self.get_dag()
+        dst_dag = target.get_dag()
+        if src_dag is None or dst_dag is None:
+            raise ValueError(
+                "Both ends of a loop edge must already belong to a Dag. Wire the normal "
+                "edges (e.g. a >> b >> c) before calling c.loop_to(a)."
+            )
+        if src_dag is not dst_dag:
+            raise RuntimeError("Cannot create a loop edge between tasks in different Dags.")
+
+        # Back-edge lives in the loop lane only: self (tail) -> target (head).
+        self.loop_downstream_task_ids.add(target.node_id)
+        target.loop_upstream_task_ids.add(self.node_id)
+        src_dag.set_loop_edge(self.node_id, target.node_id, until=until, max_iterations=max_iterations)
+
     def serialize_for_task_group(self) -> tuple[DagAttributeTypes, Any]:
         """Serialize a task group's content; used by TaskGroupSerialization."""
         raise NotImplementedError()

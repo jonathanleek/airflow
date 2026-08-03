@@ -1237,6 +1237,13 @@ class OperatorSerialization(DAGNode, BaseSerialization):
             # Bypass set_upstream etc here - it does more than we want
             dag.task_dict[task_id].upstream_task_ids.add(task.task_id)
 
+        # Rebuild the loop lane's upstream side from the serialized downstream side,
+        # mirroring the normal upstream rebuild above (loop_upstream is not serialized).
+        # Mapped operators don't carry a loop lane (loops over mapped tasks are out of
+        # scope for the cyclic-Dag PoC), so default to empty for those.
+        for task_id in getattr(task, "loop_downstream_task_ids", ()):
+            dag.task_dict[task_id].loop_upstream_task_ids.add(task.task_id)
+
     @classmethod
     def get_operator_const_fields(cls) -> set[str]:
         """Get the set of operator fields that are marked as const in the JSON schema."""
@@ -1575,7 +1582,7 @@ class OperatorSerialization(DAGNode, BaseSerialization):
         :param value: The value to deserialize
         :return: The deserialized value
         """
-        if field_name == "downstream_task_ids":
+        if field_name in ("downstream_task_ids", "loop_downstream_task_ids"):
             return set(value) if value is not None else set()
         elif field_name in _HAS_CALLBACK_FIELDS:
             return bool(value)
@@ -1722,6 +1729,9 @@ class DagSerialization(BaseSerialization):
 
             # Edge info in the JSON exactly matches our internal structure
             serialized_dag["edge_info"] = dag.edge_info
+            # Loop-edge metadata (guard + max_iterations) for true cyclic Dags; like
+            # edge_info, its nested-dict structure matches the JSON exactly.
+            serialized_dag["loop_edge_info"] = dag.loop_edge_info
             serialized_dag["params"] = cls._serialize_params_dict(dag.params)
 
             # has_on_*_callback are only stored if the value is True, as the default is False
@@ -1804,6 +1814,9 @@ class DagSerialization(BaseSerialization):
                 v = cls._deserialize_datetime(v)
             elif k == "edge_info":
                 # Value structure matches exactly
+                pass
+            elif k == "loop_edge_info":
+                # Value structure matches exactly (like edge_info)
                 pass
             elif k == "timetable":
                 v = decode_timetable(v)

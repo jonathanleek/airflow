@@ -1535,6 +1535,9 @@ class BaseOperator(AbstractOperator, metaclass=BaseOperatorMeta):
                 vars(BaseOperator(task_id="test")).keys()
                 - {
                     "upstream_task_ids",
+                    # loop_downstream_task_ids IS serialized; loop_upstream is rebuilt
+                    # from it on deserialize, mirroring upstream_task_ids above.
+                    "loop_upstream_task_ids",
                     "default_args",
                     "dag",
                     "_dag",

@@ -223,6 +223,8 @@
           { "$ref": "#/definitions/task_group" }
         ]},
         "edge_info": { "$ref": "#/definitions/edge_info" },
+        "loop_edge_info": { "$ref": "#/definitions/loop_edge_info" },
+        "allow_cycles": { "type": "boolean", "default": false },
         "dag_dependencies": { "$ref": "#/definitions/dag_dependencies" },
         "disable_bundle_versioning": {"type":  "boolean" },
         "rerun_with_latest_version": {"type": ["boolean", "null"], "default": null}
@@ -401,6 +403,22 @@
         }
       },
       "additionalProperties": false
+    },
+    "loop_edge_info": {
+      "$comment": "Metadata about DAG loop back-edges (true cyclic Dags), keyed [tail][head]",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "until": { "type": ["string", "object", "null"] },
+            "max_iterations": { "type": "integer" }
+          },
+          "required": ["max_iterations"],
+          "additionalProperties": false
+        }
+      }
     },
     "edge_info": {
       "$comment": "Metadata about DAG edges",

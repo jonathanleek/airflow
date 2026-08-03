@@ -185,6 +185,7 @@ class SerializedBaseOperator(DAGNode):
                 "doc_rst",
                 "doc_yaml",
                 "downstream_task_ids",
+                "loop_downstream_task_ids",
                 "email",
                 "email_on_failure",
                 "email_on_retry",
